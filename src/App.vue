@@ -43,8 +43,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { supabase } from '@/utils/supabase'
-import { Money, SwitchButton, ArrowDown, UserFilled } from '@element-plus/icons-vue'
+import { supabase } from './utils/supabase'
+import { Money, SwitchButton, ArrowDown } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const userEmail = ref<string>('')

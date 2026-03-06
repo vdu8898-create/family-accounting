@@ -1,9 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { supabase } from '@/utils/supabase'
+import { supabase } from '../utils/supabase'
 
 const routes = [
-    { path: '/login', component: () => import('@/views/LoginView.vue') },
-    { path: '/dashboard', component: () => import('@/views/DashboardView.vue') },
+    { path: '/login', component: () => import('../views/Loginview.vue') },
+    { path: '/dashboard', component: () => import('../views/DashboardView.vue') },
     { path: '/', redirect: '/login' }
 ]
 

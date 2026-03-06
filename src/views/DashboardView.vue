@@ -85,8 +85,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, nextTick } from 'vue'
-import { supabase } from '@/utils/supabase'
+import { ref, reactive, onMounted } from 'vue'
+import { supabase } from '../utils/supabase'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 
