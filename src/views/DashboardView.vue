@@ -16,13 +16,14 @@
             </el-form-item>
 
             <el-form-item label="类型">
-              <el-select v-model="txForm.type" placeholder="选择类型" style="width: 100%">
-                <el-option label="餐饮" value="餐饮" />
-                <el-option label="交通" value="交通" />
-                <el-option label="购物" value="购物" />
-                <el-option label="娱乐" value="娱乐" />
-                <el-option label="工资" value="工资" />
-                <el-option label="其他" value="其他" />
+              <el-select v-model="txForm.type" placeholder="选择类型" style="width: 100%" :loading="loadingOptions">
+                <el-option v-for="item in categoryOptions" :key="item.name" :label="item.name" :value="item.name" />
+              </el-select>
+            </el-form-item>
+
+            <el-form-item label="成员">
+              <el-select v-model="txForm.member_id" placeholder="选择成员" style="width: 100%" :loading="loadingOptions">
+                <el-option v-for="item in memberOptions" :key="item.id" :label="item.name" :value="item.id" />
               </el-select>
             </el-form-item>
 
@@ -69,6 +70,7 @@
           <el-table :data="recentTransactions" style="width: 100%" stripe>
             <el-table-column prop="transaction_date" label="日期" width="100" />
             <el-table-column prop="type" label="类型" width="80" />
+            <el-table-column prop="members.name" label="成员" width="80" />
             <el-table-column prop="note" label="备注" />
             <el-table-column prop="amount" label="金额" align="right">
               <template #default="scope">
@@ -96,10 +98,26 @@ const aiLoading = ref(false)
 const txForm = reactive({
   amount: 0,
   type: '',
+  member_id: '',
   is_income: false,
   transaction_date: new Date(),
   note: ''
 })
+// 1. 定义数据类型接口
+interface CategoryItem {
+  name: string;
+  // 如果数据库里还有其他字段想用到，可以在这里加，比如 id?: number;
+}
+
+interface MemberItem {
+  id: number;
+  name: string;
+}
+
+// 存储从数据库拉取的列表
+const categoryOptions = ref<CategoryItem[]>([])
+const memberOptions = ref<MemberItem[]>([])
+const loadingOptions = ref(false);
 
 // --- 列表数据 ---
 const recentTransactions = ref<any[]>([])
@@ -110,8 +128,8 @@ let myChart: echarts.ECharts | null = null
 
 // --- 提交数据 ---
 const submitTransaction = async () => {
-  if (!txForm.amount || !txForm.type) {
-    alert('请填写金额和类型')
+  if (!txForm.amount || !txForm.type || !txForm.member_id) {
+    alert('请填写金额，类型和成员')
     return
   }
   
@@ -122,6 +140,7 @@ const submitTransaction = async () => {
       .insert({
         amount: txForm.amount,
         type: txForm.type,
+        member_id: txForm.member_id,
         is_income: txForm.is_income,
         transaction_date: dayjs(txForm.transaction_date).format('YYYY-MM-DD'),
         note: txForm.note,
@@ -170,10 +189,44 @@ const analyzeWithAI = async () => {
 }
 
 // --- 获取数据 ---
+const fetchOptions = async () => {
+  loadingOptions.value = true;
+  try {
+    // 1. 获取分类列表 (只取启用的)
+    const { data: cats, error: catErr } = await supabase
+      .from('categories')
+      .select('name') // 只需要 name，如果需要 value 不同，可以选 id
+      .eq('is_active', true)
+      .order('name', { ascending: true });
+
+    if (catErr) throw catErr;
+    console.log(cats)
+    categoryOptions.value = cats || [];
+
+    // 2. 获取成员列表
+    const { data: mems, error: memErr } = await supabase
+      .from('members')
+      .select('id, name') // 需要 id 作为值，name 作为显示
+      .eq('is_active', true)
+      .order('name', { ascending: true });
+
+    if (memErr) throw memErr;
+    memberOptions.value = mems || [];
+
+  } catch (error) {
+    console.error('加载下拉选项失败:', error);
+    // 这里可以加一个 ElMessage 提示用户
+  } finally {
+    loadingOptions.value = false;
+  }
+};
 const fetchTransactions = async () => {
   const { data, error } = await supabase
     .from('transactions')
-    .select('*')
+    .select(`
+      *,
+       members!inner(id, name)  // 语法：表名!连接类型(需要的字段)
+    `)
     .order('transaction_date', { ascending: false })
     .limit(10)
   
@@ -216,6 +269,7 @@ const renderChart = (data: any[]) => {
 // 生命周期
 onMounted(() => {
   fetchTransactions()
+  fetchOptions()
   window.addEventListener('resize', () => myChart?.resize())
 })
 </script>
