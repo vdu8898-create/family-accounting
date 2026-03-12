@@ -60,7 +60,11 @@
           <template #header>
             <span>📊 本月概览 (图表区)</span>
           </template>
-          <div ref="chartRef" style="height: 300px; width: 100%;"></div>
+          <div class="chartRefDiv">
+            <div class="chartTypeRefDiv" ref="chartTypeRef"  style="height: 300px; min-width: 300px;"></div>
+            <div  class="chartMemberRef" ref="chartMemberRef" style="height: 300px; min-width: 300px;"></div>
+          </div>
+          
         </el-card>
 
         <el-card class="box-card">
@@ -87,10 +91,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted,onBeforeUnmount } from 'vue'
+import {ElMessage} from 'element-plus'
 import { supabase } from '../utils/supabase'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
+import { aiApi } from '../api'
 
 // --- 表单数据 ---
 const submitting = ref(false)
@@ -98,7 +104,7 @@ const aiLoading = ref(false)
 const txForm = reactive({
   amount: 0,
   type: '',
-  member_id: '',
+  member_id: 0,
   is_income: false,
   transaction_date: new Date(),
   note: ''
@@ -123,8 +129,13 @@ const loadingOptions = ref(false);
 const recentTransactions = ref<any[]>([])
 
 // --- 图表实例 ---
-const chartRef = ref<HTMLElement | null>(null)
-let myChart: echarts.ECharts | null = null
+//1. 定义两个 DOM 引用
+const chartTypeRef = ref<HTMLElement | null>(null)
+const chartMemberRef = ref<HTMLElement | null>(null)
+
+  //2. 定义两个chart实例
+let chartTypeInstance: echarts.ECharts | null = null
+let chartMemberInstance: echarts.ECharts | null = null
 
 // --- 提交数据 ---
 const submitTransaction = async () => {
@@ -166,26 +177,49 @@ const submitTransaction = async () => {
 
 // --- AI 模拟解析 (实际需调用 Edge Function) ---
 const analyzeWithAI = async () => {
-  if (!txForm.note) return
+  const note = txForm.note
+  if (!note) return ElMessage.warning('请输入备注！')
   aiLoading.value = true
-  
-  // 模拟延迟
-  setTimeout(() => {
-    // 这里只是演示逻辑，实际应调用后端 API
-    if (txForm.note.includes('吃') || txForm.note.includes('饭')) {
-      txForm.type = '餐饮'
-      txForm.is_income = false
-      // 尝试提取数字 (简单正则)
-      const match = txForm.note.match(/(\d+(\.\d+)?)/)
-      if (match) txForm.amount = parseFloat(match[0])
-    } else if (txForm.note.includes('工资') || txForm.note.includes('赚')) {
-      txForm.type = '工资'
-      txForm.is_income = true
+  try{
+    // 关键点：把当前的成员列表和分类列表传给后端，让 AI 更聪明
+    const memberNames = memberOptions.value.map(m => m.name)
+    const categoryNames = categoryOptions.value.map(c => c.name)
+
+    const res = await aiApi.aiParse(note, memberNames, categoryNames)
+    console.log(res.data)
+    if(!res.data.success) {
+      ElMessage.error(res.data.message)
     }
-    
-    aiLoading.value = false
-    alert('AI 解析完成，请确认信息。')
-  }, 1000)
+    if(res.data.success){
+      const transactions = res.data.data
+      if(transactions.length === 1){
+        fillForm(transactions[0])
+        ElMessage.success('AI解析成功')
+      }else {
+        // 🔥 发现多笔交易！
+        ElMessage.warning(`一次只能提取一笔交易，已填充第一笔，请检查后续内容。`);
+        // 策略 1: 填充第一笔到当前表单
+        fillForm(transactions[0]);
+      }
+    }
+  } catch (error) {
+    ElMessage.error('网络错误或服务不可用');
+  } finally {
+    aiLoading.value = false;
+  }
+}
+
+const fillForm = (data: any) => {
+  txForm.amount = data.amount
+  txForm.type = data.type
+  txForm.is_income = data.is_income
+  txForm.transaction_date = data.transaction_date
+  txForm.note = data.note || txForm.note; // 保留原备注或更新
+  //自动匹配成员id
+      if(data.member_name){
+        const target_member = memberOptions.value.find(m=>m.name === data.member_name)
+        if(target_member) txForm.member_id = target_member.id
+      }
 }
 
 // --- 获取数据 ---
@@ -200,7 +234,6 @@ const fetchOptions = async () => {
       .order('name', { ascending: true });
 
     if (catErr) throw catErr;
-    console.log(cats)
     categoryOptions.value = cats || [];
 
     // 2. 获取成员列表
@@ -238,43 +271,102 @@ const fetchTransactions = async () => {
 
 // --- 渲染图表 ---
 const renderChart = (data: any[]) => {
-  if (!chartRef.value) return
-  if (!myChart) myChart = echarts.init(chartRef.value)
+  //=== 初始化图表实例 ===
+  if (!chartTypeRef.value || !chartMemberRef.value) return
+  if (!chartTypeInstance) chartTypeInstance = echarts.init(chartTypeRef.value)
+  if (!chartMemberInstance) chartMemberInstance = echarts.init(chartMemberRef.value)
   
-  // 简单处理：按类型统计支出
-  const stats: Record<string, number> = {}
+  // === 数据处理 1: 按类型统计 (支出) ===
+  const typeStats: Record<string, number> = {}
   data.forEach(item => {
     if (!item.is_income) {
-      stats[item.type] = (stats[item.type] || 0) + item.amount
+      typeStats[item.type] = (typeStats[item.type] || 0) + item.amount
     }
   })
-  
-  const option = {
-    tooltip: { trigger: 'item' },
-    title: { text: '近期支出分布', left: 'center' },
+
+   // === 数据处理 2: 按成员统计 (总支出 或 总收入，这里演示总支出) ===
+   const memberStats: Record<string, number> = {}
+   data.forEach(item => {
+    if(!item.is_income) {
+      memberStats[item.members.name] = (memberStats[item.members.name] || 0) + item.amount
+    }
+  })
+
+  const typeOption  = {
+    tooltip: { trigger: 'item', formatter: '{b}: {c}元 ({d}%)'  },
+    title: { text: '支出类型分布', left: 'center',top: 0, textStyle: { fontSize: 16 } },
     series: [
       {
         name: '支出类型',
         type: 'pie',
-        radius: '50%',
-        data: Object.keys(stats).map(key => ({ value: stats[key], name: key })),
-        emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0.5)' } }
+        radius: ['40%', '70%'], // 环形图更好看
+        avoidLabelOverlap: false,
+        itemStyle: { borderRadius: 5, borderColor: '#fff', borderWidth: 2 },
+        data: Object.keys(typeStats).map(key => ({ value: typeStats[key], name: key })),
+        // label: { show: false, position: 'center' },
+        emphasis: { 
+          label: { show: true, fontSize: 16, fontWeight: 'bold' },
+          itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0.5)' } 
+        }
+      }
+    ]
+  }
+
+  const memberOption = {
+    title: { text: '成员支出贡献', left: 'center', top:0,  textStyle: { fontSize: 16 } },
+    tooltip: { trigger: 'item', formatter: '{b}: {c}元 ({d}%)' },
+    // legend: { orient: 'vertical', left: 'left', top: 'middle' },
+    series: [
+      {
+        name: '成员',
+        type: 'pie',
+        radius: ['40%', '70%'],
+        // avoidLabelOverlap: false,
+        itemStyle: { borderRadius: 5, borderColor: '#fff', borderWidth: 2 },
+        data: Object.keys(memberStats).map(key => ({ value: memberStats[key], name: key })),
+        emphasis: { 
+          label: { show: true, fontSize: 16, fontWeight: 'bold' },
+          itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0.5)' }
+        }
       }
     ]
   }
   
-  myChart.setOption(option)
+  chartTypeInstance.setOption(typeOption )
+  chartMemberInstance.setOption(memberOption)
+}
+
+// --- 监听窗口大小变化，自适应图表 ---
+const handleResize = () => {
+  chartTypeInstance?.resize()
+  chartMemberInstance?.resize()
 }
 
 // 生命周期
 onMounted(() => {
   fetchTransactions()
   fetchOptions()
-  window.addEventListener('resize', () => myChart?.resize())
+  window.addEventListener('resize', handleResize)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleResize)
+  chartTypeInstance?.dispose()
+  chartMemberInstance?.dispose()
 })
 </script>
 
 <style scoped>
 .dashboard { padding: 20px; }
 .box-card { margin-bottom: 20px; }
+.chartRefDiv {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  justify-content: space-between;
+
+  .chartTypeRefDiv, .chartMemberRef {
+    flex: 1 1;
+  }
+}
 </style>
